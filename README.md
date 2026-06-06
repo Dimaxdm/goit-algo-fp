@@ -337,3 +337,178 @@ Heap entries are `(distance, counter, vertex)` tuples. The integer `counter` pre
 * **Negative-weight** support $\textemdash$ replace with Bellman-Ford or Johnson's algorithm.
 * **Visualisation** $\textemdash$ export the predecessor tree as a DOT file for Graphviz rendering.
 
+
+# Task 04 $\textemdash$ Binary Heap Tree Visualizer
+
+An interactive GUI tool for visualizing binary heaps as trees, built on top of NetworkX and Matplotlib
+
+## Problem Statement 
+
+Binary heaps are typically stored as flat arrays $\textendash$ a compact, cache-friendly structure that underpins priority queues, heap sort, and task scheduling. While efficient in memory, the array form makes it difficult to reason about the tree topology at a glance, particularly when debugging heap construction, verifying the heap property, or communicating algorithmic behavior to others.
+
+The challenge: given an existing codebase that renders arbitrary binary trees from linked `Node` objects, extend it with an interactive GUI that accepts a raw heap array, builds the corresponding tree, validates the heap property, and redraws everything in real time $\textendash$ without modifying the original tree-building infrastructure.
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────┐
+│              launch_gui()               │  <- Interactive layer (Matplotlib widgets)
+├─────────────────────────────────────────┤
+│  build_heap_tree()   validate_heap()    │  <- Heap logic layer
+├─────────────────────────────────────────┤
+│         draw_tree()  add_edges()        │  <- Rendering layer
+├─────────────────────────────────────────┤
+│                 Node                    │  <- Data model
+└─────────────────────────────────────────┘
+```
+
+Each layer has a single responsibility and no layer reaches downward by more than one level.
+
+## Base Code (unchanged) 
+
+The original codebase provides three components that are preserved verbatim:
+
+`Node` $\textendash$ a linked tree node holding a value, a display color, and a **UUID** (used as the NetworkX node key to avoid collisions when duplicate values appear in the heap).
+
+`add_edges(graph, node, pos, x, y, layer)` $\textendash$ a recursive DFS that populates a `nx.DiGraph` and computes `(x, y)` positions using a layer-aware horizontal offset:
+
+```
+x_left  = x_parent − 1 / 2^layer
+x_right = x_parent + 1 / 2^layer
+```
+Each level halves the spread, producing a balanced layout regardless of tree depth.
+
+`draw_tree(tree_root, ax)` $\textendash$ **wraps** `add_edges`, extracts per-node colors and labels, and calls `nx.draw()`. The only change from the original signature is the addition of an `ax` parameter so the function draws onto a caller-supplied `Axes` object rather than creating a new figure $\textendash$ this is the minimal change required to support GUI redraws.
+
+## New Components
+
+`build_heap_tree(heap)`
+Constructs a linked `Node` tree from a heap array using the standard index arithmetic:
+
+| Relationship | Formula |
+| --- | --- |
+| Left child | `2 * i + 1` |
+| Right child | `2 * i + 2` | 
+| Parent | `(i - 1) // 2` | 
+
+### Two-pass approach:
+
+```python
+# Pass 1 -- instantiate all nodes, preserving index-to-node mapping
+nodes = [Node(val, color=node_color(i)) for i, val in enumerate(heap)]
+
+# Pass 2 -- wire left/right pointers using heap index arithmetic
+for i, node in enumerate(nodes):
+    left_idx, right_idx = 2 * i + 1, 2 * i + 2
+    if left_idx  < len(nodes): node.left  = nodes[left_idx]
+    if right_idx < len(nodes): node.right = nodes[right_idx]
+```
+Creating all nodes first and linking in a second pass avoids forward-reference issues and keeps both passes linear and readable. The function returns `nodes[0]` $\textendash$ the root $\textendash$ which is passed directly to `draw_tree`.
+
+### Node colors encode structural role:
+
+| Color | Role |
+| --- | --- |
+| Sky blue | Root (index 0) |
+| Light green | Left children (odd indices) |
+| Light salmon | Right children (even indices > 0) | 
+
+
+`validate_heap(heap, heap_type)`
+Walks the array once and checks every parent-child pair against the selected heap property:
+
+```python
+for i in range(len(heap)):
+    left_idx  = 2 * i + 1
+    right_idx = 2 * i + 2
+    for child_idx in (left_idx, right_idx):
+        if child_idx >= len(heap):
+            continue
+        if heap_type == "min" and heap[child_idx] < heap[i]:
+            return False, (f"Min-heap violated: parent[{i}]={heap[i]} "
+                           f"> child[{child_idx}]={heap[child_idx]}")
+        if heap_type == "max" and heap[child_idx] > heap[i]:
+            return False, (f"Max-heap violated: parent[{i}]={heap[i]} "
+                           f"< child[{child_idx}]={heap[child_idx]}")
+return True, f"Valid {heap_type}-heap"
+```
+
+Returns `(bool, message)` $\textendash$ intentionally decoupled from rendering so it can be unit-tested independently or reused in non-GUI contexts.
+
+`launch_gui()`
+
+Builds the interactive window using `matplotlib.widgets` $\textendash$ no additional GUI framework required. The layout splits the figure into a tree drawing area (top 72%) and a control panel strip (bottom 28%):
+
+```
+┌──────────────────────────────────────────────────┐
+│                                                  │
+│              Tree drawing area                   │
+│                  (ax_tree)                       │
+│                                                  │
+├──────────────────────────────────────────────────┤
+│  [Heap array: _________]  Min○ Max○  [Visualize] │
+│  Status: Valid min-heap                          │
+└──────────────────────────────────────────────────┘
+```
+### Controls: 
+* **TextBox** $\textendash$ comma-separated integer input; also fires on Enter key.
+* **RadioButtons** $\textendash$ toggles between Min-heap and Max-heap validation mode
+* **Button** $\textendash$ triggers a full redraw of the tree.
+* **Status bar** $\textendash$ shows validation result in green (valid) or red (violated), with the exact parent-child indices that break the property when invalid.
+* **Legend** $\textendash$ static color key rendered in its own `Axes` panel.
+
+The `render()` callback clears `ax_tree`, rebuilds the tree from scratch, redraws, and updates the status bar. Using `fig.canvas.draw_idle()` instead of `plt.draw()` ensures redraws are efficient and non-blocking.
+
+## Requirements
+
+```bash
+python >= 3.10
+networkx
+matplotlib
+```
+
+### Install dependencies:
+
+```
+pip install networkx matplotlib uuid
+```
+
+## Usage 
+
+```bash
+python t04_heap_tree.py
+```
+
+The GUI launches with a default min-heap `[0, 4, 1, 5, 10, 3]` pre-rendered. From there:
+
+1. Type any comma-separated integer array into the text box (e.g. `10, 9, 8, 5, 6, 3, 2`).
+2. Select Min-heap or Max-heap from the radio buttons.
+3. Press **Visualize** or hit Enter.
+4. The tree redraws and the status bar reports whether the heap property holds.
+
+The tool intentionally accepts arrays that violate the heap property $\textendash$ this is useful for debugging insertion errors or inspecting intermediate states during heap construction.
+
+## Default output
+
+<img width="1107" height="778" alt="image" src="https://github.com/user-attachments/assets/302764db-e1ed-4091-a53e-3bf96933d424" />
+
+## Design Decisions 
+
+### Why keep `build_heap_tree` and `validate_heap` separate from the GUI?
+
+Both functions are pure $\textendash$ given the same input they always return the same output, with no dependency on figure state. This makes them independently testable and reusable outside the GUI context (e.g. in a notebook or a script that batch-validates heaps).
+
+### Why `matplotlib.widgets` instead of `Tkinter` or `PyQt`?
+
+The project already depends on Matplotlib for rendering. Using `matplotlib.widgets` adds zero new dependencies while keeping the entire tool in a single file. For a visualization-first tool, this is the right trade-off.
+
+### Why not use `heapq` for validation?
+
+`heapq` only handles min-heaps and mutates the input list. `validate_heap` supports both min and max variants, is non-destructive, and reports the exact index pair that violates the property $\textendash$ information heapq does not provide.
+
+### Why `draw_idle()` instead of `plt.draw()`?
+
+`fig.canvas.draw_idle()` schedules a redraw on the next GUI event loop tick rather than forcing an immediate repaint. This prevents the interface from locking up on larger trees and is the idiomatic approach for Matplotlib interactive applications.
+
+
+
